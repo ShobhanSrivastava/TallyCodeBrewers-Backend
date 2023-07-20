@@ -2,7 +2,7 @@ const randomPara = `Lorem ipsum dolor sit amet. Qui deserunt similique sit molli
 Sed culpa distinctio ut harum deleniti a earum maxime quo autem facere sed repellat quasi quo temporibus explicabo. Ab perspiciatis tempore ad consequatur aliquam sed debitis eius. Qui similique corrupti aut quasi voluptatibus est illum inventore qui autem enim non cumque ipsum a voluptatum odio.`
 
 // Random paragraph generation based on difficulty. TODO: difficulty based para generation
-function paraGenerator() {
+function paraGenerator(difficulty) {
     return randomPara;
 }
 

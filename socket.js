@@ -1,5 +1,8 @@
 import { nanoid } from 'nanoid';
-import { EVENTS, CLIENT_EVENTS } from './utils/actions';
+import { EVENTS, CLIENT_EVENTS } from './utils/actions.js';
+import paraGenerator from './utils/paraGenerator.js';
+
+let globalConnection;
 
 // roomMap contains the data related to each room
 const roomMap = {}
@@ -8,8 +11,10 @@ const roomInitialState = {
     difficulty: 0, status: 0, playersRequired: 3, players: null, roomWaitingTimeout: null
 }
 
-// socketToRoomMapping contains the player vs the room assigned to the room
+// playerToRoomMapping contains the player vs the room assigned to the room
 const playerToRoomMapping = {}
+// playerToRoomMapping contains the player vs the socket object of the client
+const playerToClientMapping = {}
 
 // Function to find a room for the new connected player
 function findRoom(difficulty) {
@@ -24,17 +29,12 @@ function findRoom(difficulty) {
     return null;
 }
 
-function assignRoom(room, client) {
+function assignRoom(room, client, username) {
     // Make the client join room with given ID
     client.join(room);
 
-    // Notify other members
-    // roomMap[room].players.forEach(player => {
-    //     player.playerClient.emit()
-    // })
-
     // Add current client as the player in the list
-    roomMap[room].players.push({ playerID: client.id, playerClient: client });
+    roomMap[room].players.push({ username, playerID: client.id });
     // Reduce the number of players required
     roomMap[room].playersRequired -= 1;
 
@@ -42,6 +42,9 @@ function assignRoom(room, client) {
 
     // Mapping the client ID with the room ID
     playerToRoomMapping[client.id] = room;
+
+    // Notify other members of the room
+    client.to(room).emit(CLIENT_EVENTS.ROOM_JOINED, { username, players: roomMap[room].players })
 
     // If the room is full, start the game
     if(roomMap[room].playersRequired === 0) {
@@ -59,10 +62,11 @@ function waitingTimeEnds(room) {
     }
     else {
         const player = roomMap[room].players[0];
-        player.playerClient.emit('error', 'Not enough players to start the room. Please join another room');
+        const client = playerToClientMapping[player.playerID];
+        client.emit('error', 'Not enough players to start the room. Please join another room');
 
         console.log('Not enough players, room deleted', roomMap[room]);
-        player.playerClient.disconnect(true);
+        client.disconnect(true);
     }
 }
 
@@ -81,11 +85,14 @@ function createRoom(difficulty) {
 
 function startGame(room) {
     clearTimeout(roomMap[room].roomWaitingTimeout);
-    roomMap[room].roomWaitingTimeout = null;
+    
+    if(!roomMap[room].roomWaitingTimeout) roomMap[room].roomWaitingTimeout = null;
 
-    console.log('Starting the game');
+    // Create paragraph based on difficulty
+    const para = paraGenerator(room.difficulty);
 
-       
+    // Send the paragraph to all the players of the room
+    globalConnection.to(room).emit(CLIENT_EVENTS.START_GAME, { para, startTime: Date.now() + 10000 });
 }
 
 function disconnectClient(client) {
@@ -97,9 +104,11 @@ function disconnectClient(client) {
 
     console.log('client ID:', client.id);
 
+    let playerLeaving;
+
     // Removing the current player
     const newArrayOfPlayers = room.players.filter(player => {
-        console.log(player.playerID);
+        if(player.playerID === client.id) playerLeaving = player;
         return player.playerID !== client.id
     });
     roomMap[roomID].players = newArrayOfPlayers;
@@ -109,7 +118,13 @@ function disconnectClient(client) {
 
     // delete the player to room mapping
     delete playerToRoomMapping[client.id];
+    // delete the player to socket object mapping
+    delete playerToClientMapping[client.id];
+    
     console.log(`Player with ID ${client.id} has left the room`);
+
+    // Notify the other players of the disconnect
+    client.to(roomID).emit(CLIENT_EVENTS.ROOM_LEFT, { username: playerLeaving.username, players: roomMap[roomID].players  })
 
     // If the number of players in the room are 0, delete room
     if(newArrayOfPlayers.length === 0) {
@@ -119,9 +134,12 @@ function disconnectClient(client) {
 }
 
 function socketInit(io) {
-    io.on('connection', (client) => {
+    globalConnection = io;
+
+    io.on(EVENTS.JOIN, (client) => {
         // Get the difficulty from the query
-        const difficulty = client.handshake.query.difficulty;
+        const {difficulty, username} = client.handshake.query;
+        playerToClientMapping[client.id] = client;
 
         if(!difficulty) client.emit('error', 'Difficulty required');
 
@@ -129,10 +147,10 @@ function socketInit(io) {
         let room = findRoom(difficulty);
 
         if(!room) room = createRoom(difficulty); // If no empty room found, create a room
-        assignRoom(room, client); // If room is found, assign this room the new player
+        assignRoom(room, client, username); // If room is found, assign this room the new player
 
         // On disconnection, gracefully disconnect the client
-        client.on('disconnect', () => {
+        client.on(EVENTS.EXIT, () => {
             disconnectClient(client);
         });
     });
