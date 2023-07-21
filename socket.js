@@ -8,7 +8,12 @@ let globalConnection;
 const roomMap = {}
 
 const roomInitialState = {
-    difficulty: 0, status: 0, playersRequired: 3, players: null, roomWaitingTimeout: null
+    difficulty: 0, 
+    status: 0, 
+    playersRequired: 3, 
+    players: null, 
+    roomWaitingTimeout: null, 
+    gameTimeout: null
 }
 
 // playerToRoomMapping contains the player vs the room assigned to the room
@@ -63,7 +68,7 @@ function waitingTimeEnds(room) {
     else {
         const player = roomMap[room].players[0];
         const client = playerToClientMapping[player.playerID];
-        client.emit('error', 'Not enough players to start the room. Please join another room');
+        client.emit(CLIENT_EVENTS.ERROR, 'Not enough players to start the room. Please join another room');
 
         console.log('Not enough players, room deleted', roomMap[room]);
         client.disconnect(true);
@@ -77,7 +82,7 @@ function createRoom(difficulty) {
     // Create room with unique ID with default state of the room
     roomMap[room] = { ...roomInitialState, difficulty, players: [], roomWaitingTimeout: setTimeout(() => {
         waitingTimeEnds(room);
-    }, 60000) };
+    }, 10000) };
 
     console.log(`New Room with id ${room} Created`);
     return room;
@@ -87,12 +92,30 @@ function startGame(room) {
     clearTimeout(roomMap[room].roomWaitingTimeout);
     
     if(!roomMap[room].roomWaitingTimeout) roomMap[room].roomWaitingTimeout = null;
+    roomMap[room].playersYetToFinish = roomMap[room].players.length;
 
     // Create paragraph based on difficulty
-    const para = paraGenerator(room.difficulty);
+    const paragraph = paraGenerator(room.difficulty);
 
     // Send the paragraph to all the players of the room
-    globalConnection.to(room).emit(CLIENT_EVENTS.START_GAME, { para, startTime: Date.now() + 10000 });
+    globalConnection.to(room).emit(CLIENT_EVENTS.START_GAME, { paragraph });
+
+    // Gametime starts
+    roomMap[room].gameTimeout = setTimeout(() => {
+        endGame(room);
+    }, 50000);
+}
+
+function endGame(room) {
+    roomMap[room].gameTimeout = null;
+    // TODO: Ranking Logic 
+    globalConnection.to(room).emit(CLIENT_EVENTS.END_GAME, { players: roomMap[room].players, message: "Game ended" });
+
+    // Remove players from the game
+    roomMap[room].players.forEach(player => {
+        const playerClient = playerToClientMapping[player.playerID];
+        playerClient.disconnect(true);
+    })
 }
 
 function disconnectClient(client) {
@@ -133,6 +156,31 @@ function disconnectClient(client) {
     }
 }
 
+function updateClientProgress(client, progressData) {
+    // Get the room of the player
+    const room = playerToRoomMapping[client.id];
+
+    roomMap[room].players.forEach(player => {
+        if(player.playerID === client.id) {
+            player.progress = progressData;
+            console.log('Player state updated');
+            client.to(room).emit(CLIENT_EVENTS.GAME_STATE_UPDATE, { player });
+            console.log('Player progress notified');
+            return;
+        }
+    });
+}
+
+function clientFinishedGame(client, data) {
+    const room = roomMap[client.id];
+    room.players.forEach(player => {
+        if(player.playerID === client.id) {
+            player.finishTime = Date.now();
+            return;
+        }
+    })
+}
+
 function socketInit(io) {
     globalConnection = io;
 
@@ -149,10 +197,26 @@ function socketInit(io) {
         if(!room) room = createRoom(difficulty); // If no empty room found, create a room
         assignRoom(room, client, username); // If room is found, assign this room the new player
 
+        // For testing
+        client.on('echo', data => {
+            data = JSON.parse(data);
+            console.log(data);
+        })
+
         // On disconnection, gracefully disconnect the client
         client.on(EVENTS.EXIT, () => {
             disconnectClient(client);
         });
+
+        client.on(EVENTS.PROGRESS_UPDATE, (data) => {
+            data = JSON.parse(data);
+            updateClientProgress(client, data);
+        });
+
+        client.on(EVENTS.FINISHED, (data) => {
+            data = JSON.stringify(data);
+            clientFinishedGame(client, data);
+        })
     });
 }
 
