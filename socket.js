@@ -34,12 +34,12 @@ function findRoom(difficulty) {
     return null;
 }
 
-function assignRoom(room, client, username) {
+function assignRoom(room, client, username, isLeader) {
     // Make the client join room with given ID
     client.join(room);
 
     // Add current client as the player in the list
-    roomMap[room].players.push({ username, playerID: client.id });
+    roomMap[room].players.push({ username, playerID: client.id, isLeader });
     // Reduce the number of players required
     roomMap[room].playersRequired -= 1;
 
@@ -49,6 +49,7 @@ function assignRoom(room, client, username) {
     playerToRoomMapping[client.id] = room;
 
     // Notify other members of the room
+    client.emit(CLIENT_EVENTS.ROOM_JOIN_SUCCESS, { room });
     client.to(room).emit(CLIENT_EVENTS.ROOM_JOINED, { username, players: roomMap[room].players })
 
     // If the room is full, start the game
@@ -75,17 +76,18 @@ function waitingTimeEnds(room) {
     }
 }
 
-function createRoom(difficulty) {
+function createRoom(client, difficulty) {
     // Generate 5 character ID for new Room
     const room = nanoid(5);
 
     // Create room with unique ID with default state of the room
     roomMap[room] = { ...roomInitialState, difficulty, players: [], roomWaitingTimeout: setTimeout(() => {
         waitingTimeEnds(room);
-    }, 10000) };
+    }, 60000) };
 
     console.log(`New Room with id ${room} Created`);
-    return room;
+
+    assignRoom(room, client, username, isLeader);
 }
 
 function startGame(room) {
@@ -107,6 +109,7 @@ function startGame(room) {
 }
 
 function endGame(room) {
+    if(!roomMap[room]) return;
     roomMap[room].gameTimeout = null;
     // TODO: Ranking Logic 
     globalConnection.to(room).emit(CLIENT_EVENTS.END_GAME, { players: roomMap[room].players, message: "Game ended" });
@@ -181,42 +184,73 @@ function clientFinishedGame(client, data) {
     })
 }
 
+const customRoomMap = {}
+
 function socketInit(io) {
     globalConnection = io;
 
     io.on(EVENTS.JOIN, (client) => {
-        // Get the difficulty from the query
-        const {difficulty, username} = client.handshake.query;
-        playerToClientMapping[client.id] = client;
+        console.log('New player joined');
 
-        if(!difficulty) client.emit('error', 'Difficulty required');
+        // Custom Room 
+        client.on('create_room', ({ username, difficulty }) => {
+            try {
+                const roomID = nanoid(8);
+    
+                customRoomMap[roomID] = {
+                    paragraph: paraGenerator(difficulty),
+                    id: roomID,
+                    players: []
+                }
 
-        // Find a room for the client
-        let room = findRoom(difficulty);
+                let player = {
+                    username, clientID: client.id, roomOwner: true
+                }
 
-        if(!room) room = createRoom(difficulty); // If no empty room found, create a room
-        assignRoom(room, client, username); // If room is found, assign this room the new player
+                customRoomMap[roomID].players.push(player);
 
-        // For testing
-        client.on('echo', data => {
-            data = JSON.parse(data);
-            console.log(data);
-        })
-
-        // On disconnection, gracefully disconnect the client
-        client.on(EVENTS.EXIT, () => {
-            disconnectClient(client);
+                console.log(JSON.stringify(customRoomMap[roomID]));
+                client.join(roomID);
+                client.emit('create_room_success', { roomID, room: customRoomMap[roomID] });
+            }
+            catch(err) {
+                client.emit('error', { message: 'Error occurred while creating room' });
+            }
         });
 
-        client.on(EVENTS.PROGRESS_UPDATE, (data) => {
-            data = JSON.parse(data);
-            updateClientProgress(client, data);
-        });
 
-        client.on(EVENTS.FINISHED, (data) => {
-            data = JSON.stringify(data);
-            clientFinishedGame(client, data);
-        })
+
+        // client.on('')        
+        // playerToClientMapping[client.id] = client;
+
+        // if(!difficulty) client.emit('error', 'Difficulty required');
+
+        // // Find a room for the client
+        // let room = findRoom(difficulty);
+
+        // if(!room) room = createRoom(client, difficulty); // If no empty room found, create a room
+        // else assignRoom(room, client, username, false); // If room is found, assign this room the new player
+
+        // // For testing
+        // client.on('echo', data => {
+        //     data = JSON.parse(data);
+        //     console.log(data);
+        // })
+
+        // // On disconnection, gracefully disconnect the client
+        // client.on(EVENTS.EXIT, () => {
+        //     disconnectClient(client);
+        // });
+
+        // client.on(EVENTS.PROGRESS_UPDATE, (data) => {
+        //     data = JSON.parse(data);
+        //     updateClientProgress(client, data);
+        // });
+
+        // client.on(EVENTS.FINISHED, (data) => {
+        //     data = JSON.stringify(data);
+        //     clientFinishedGame(client, data);
+        // })
     });
 }
 
